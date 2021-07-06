@@ -170,13 +170,14 @@ class ResNetAttention(nn.Module):
     def _forward_impl(self, x: Tensor) -> Tensor:
         # See note [TorchScript super()]
         B, C, H, W = x.shape
+        x_cls = self.cls_token.expand(B, -1, -1)
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
 
         x = self.layer1(x)
-        x_cls = self.resnet_block1(x.reshape(B, 64, -1), self.cls_token)
+        x_cls = self.resnet_block1(x.reshape(B, 64, -1), x_cls)
         x = self.layer2(x)
         x_cls = self.resnet_block2(x.reshape(B, 128, -1), x_cls)
         x = self.layer3(x)
@@ -189,6 +190,47 @@ class ResNetAttention(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         x_cls = self._forward_impl(x)
         return self.head(x_cls)
+    
+class FasterResNetAttention(ResNetAttention):
+
+    def __init__(
+        self,
+        block,
+        layers: List[int],
+        num_classes: int = 10,
+        zero_init_residual: bool = False,
+        groups: int = 1,
+        width_per_group: int = 64,
+        replace_stride_with_dilation: Optional[List[bool]] = None,
+        norm_layer: Optional[Callable[..., nn.Module]] = None,
+        token_dim = 256
+    ):
+        super(FasterResNetAttention, self).__init__(block, layers, num_classes, zero_init_residual,
+                                                    groups, width_per_group, replace_stride_with_dilation, norm_layer,
+                                                    token_dim)
+        self.resnet_block1 = ResnetBlock(token_dim, 64)
+        self.resnet_block2 = ResnetBlock(token_dim, 128)
+        self.resnet_block3 = ResnetBlock(token_dim, 256)
+        self.resnet_block4 = ResnetBlock(token_dim, 512)
+
+    def _forward_impl(self, x: Tensor) -> Tensor:
+        B, C, H, W = x.shape
+        x_cls = self.cls_token.expand(B, -1, -1)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x_cls = self.resnet_block1(x.reshape(B, 64, -1).permute(0,2,1), x_cls)
+        x = self.layer2(x)
+        x_cls = self.resnet_block2(x.reshape(B, 128, -1).permute(0,2,1), x_cls)
+        x = self.layer3(x)
+        x_cls = self.resnet_block3(x.reshape(B, 256, -1).permute(0,2,1), x_cls)
+        x = self.layer4(x)
+        x_cls = self.resnet_block4(x.reshape(B, 512, -1).permute(0,2,1), x_cls)
+
+        return x_cls[:, 0]
 
 
 def iterative_inv(mat, n_iter=6):
